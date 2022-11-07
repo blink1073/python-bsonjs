@@ -1,0 +1,18 @@
+[build-system]
+requires = [
+    "setuptools>=47.9",
+    "wheel>=0.37"
+]
+
+[tool.cibuildwheel]
+skip = "pp* *-manylinux_i686 *_ppc64le *_s390x *-musllinux*"
+before-build = "bash ./cibw_before_build.sh"
+build-frontend = "build"
+test-command = "python -c \"from bsonjs import dumps\""
+
+[tool.cibuildwheel.linux]
+manylinux-x86_64-image = "manylinux2014"
+
+[tool.cibuildwheel.macos]
+archs = "x86_64 universal2"
+test-skip = "*universal2:arm64"

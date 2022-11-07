@@ -1,88 +1,103 @@
 name: Python Wheels
 
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: wheels-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: ./bindings/python
 
 jobs:
-  build-wheels:
-    runs-on: ${{ matrix.os }}
+  build_wheels:
+    name: Build wheel for ${{ matrix.python }}-${{ matrix.buildplat[1] }}
+    runs-on: ${{ matrix.buildplat[0] }}
     strategy:
+      # Ensure that a wheel builder finishes even if another fails
+      fail-fast: false
       matrix:
-        os: [macos-latest, windows-2019, ubuntu-latest]
-    name: Build CPython ${{ matrix.python-version }}-${{ matrix.os }}
+        # Github Actions doesn't support pairing matrix values together, let's improvise
+        # https://github.com/github/feedback/discussions/7835#discussioncomment-1769026
+        buildplat:
+        - [ubuntu-20.04, manylinux_x86_64]
+        - [macos-10.15, macosx_*]
+        - [windows-2019, win_amd64]
+        python: ["cp36", "cp37", "cp38", "cp39", "cp310", "cp311"]
+
     steps:
-      - uses: actions/checkout@v2
-      - uses: pypa/cibuildwheel@v2.11.2
+      - name: Checkout pymongoarrow
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v2
+
+      - name: Install cibuildwheel
+        run: python -m pip install "cibuildwheel>=2.4,<3"
+
+      - name: Build MacOS Py38 Wheel
+        if: ${{ matrix.python == 'cp38' && matrix.buildplat[0] == 'macos-10.15' }}
         env:
-          CIBW_ARCHS_MACOS: x86_64 universal2
-          CIBW_TEST_SKIP: '*universal2:arm64'
-          CIBW_BUILD: "cp36-macosx_x86_64 cp38-macosx_universal2 cp36-win* cp36-manylinux_{x86_64,i686}"
+          CIBW_BUILD: cp38-macosx_x86_64
+          MACOSX_DEPLOYMENT_TARGET: "10.13"
+        run: python -m cibuildwheel --output-dir wheelhouse
+
+      - name: Build wheels
+        if: ${{ matrix.python != 'cp38' || matrix.buildplat[0] != 'macos-10.15' }}
+        env:
+          CIBW_BUILD: ${{ matrix.python }}-${{ matrix.buildplat[1] }}
+          MACOSX_DEPLOYMENT_TARGET: "10.13"
+        run: python -m cibuildwheel --output-dir wheelhouse
+
       - uses: actions/upload-artifact@v2
         with:
-          name: python_bsonjs-3.6-${{ matrix.os }}-wheel
-          path: ./wheelhouse/*.whl
+          name: ${{ matrix.python }}-${{ startsWith(matrix.buildplat[1], 'macosx') && 'macosx' || matrix.buildplat[1] }}
+          path: ./bindings/python/wheelhouse/*.whl
           if-no-files-found: error
-  test-non-linux-wheels:
-    needs: build-wheels
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [macos-latest, windows-2019]
-        python-version: [3.6, 3.7, 3.8, 3.9, "3.10", "3.11"]
-    name: Test CPython ${{ matrix.python-version }}-${{ matrix.os }}
-    steps:
-      - name: Setup Python
-        uses: actions/setup-python@v2
-        with:
-          python-version: ${{ matrix.python-version }}
-      - name: Download a previously created wheel
-        uses: actions/download-artifact@v2
-        with:
-          name: python_bsonjs-3.6-${{ matrix.os }}-wheel
-      - name: Test wheel
-        shell: bash
-        run: |
-          python -m pip install -U pip
-          python -m pip install --no-index --find-links=./ python_bsonjs
-          python -m pip list | grep python-bsonjs
-          python -c "from bsonjs import dumps"
-  # Linux
-  test-manylinux-wheels:
-    runs-on: ${{ matrix.os }}
-    needs: build-wheels
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-        container: ['manylinux2014_i686', 'manylinux2014_x86_64']
-        python-version: ['cp36-cp36m', 'cp37-cp37m', 'cp38-cp38',
-                         'cp39-cp39', 'cp310-cp310', 'cp311-cp311']
-    name: Test CPython ${{ matrix.python-version }}-${{ matrix.container }}
-    steps:
-      - name: Download a previously created wheel
-        uses: actions/download-artifact@v2
-        with:
-          name: python_bsonjs-3.6-${{ matrix.os }}-wheel
-      - name: Test wheel
-        run: |
-          docker run --rm --volume `pwd`:/python quay.io/pypa/${{ matrix.container }} /bin/bash -c "/opt/python/${{ matrix.python-version }}/bin/python -m pip install -U pip && /opt/python/${{ matrix.python-version }}/bin/python -m pip install --find-links=/python/ --no-index python_bsonjs &&  /opt/python/${{ matrix.python-version }}/bin/python -m pip list | grep python-bsonjs && /opt/python/${{ matrix.python-version }}/bin/python -c 'from bsonjs import dumps'"
+
   make_sdist:
     name: Make SDist
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v2
+        with:
+          # Build sdist on lowest supported Python
+          python-version: '3.7'
+
       - name: Build SDist
-        run: python setup.py sdist --dist-dir=dist --formats=gztar
+        working-directory: ./bindings/python
+        run: |
+          set -ex
+          python -m pip install -U pip build
+          python -m build --sdist .
+      - name: Test Sdist
+        working-directory: ./bindings/python
+        run: |
+          python -m pip install dist/*.gz
+          cd ..
+          python -c "from bsonjs import dumps"
       - uses: actions/upload-artifact@v2
         with:
           name: "sdist"
-          path: dist/*.tar.gz
-  collect-wheels:
+          path: ./bindings/python/wheelhouse/*.tar.gz
+
+  collect-dist:
     runs-on: ubuntu-latest
-    needs: [build-wheels, make_sdist]
+    needs: [build_wheels, make_sdist]
     name: Download Wheels
     steps:
       - name: Download all workflow run artifacts
         uses: actions/download-artifact@v2
       - name: Flatten directory
+        working-directory: .
         run: |
           find . -mindepth 2 -type f -exec mv {} . \;
           find . -type d -empty -delete
