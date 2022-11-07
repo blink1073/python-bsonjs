@@ -93,7 +93,7 @@ jobs:
       - name: Flatten directory
         working-directory: .
         run: |
-          find . -mindepth 2 -type f -exec mv {} . \;
+          find . -mindepth 1 -type f -exec mv {} . \;
           find . -type d -empty -delete
       - uses: actions/upload-artifact@v2
         with:
